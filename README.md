@@ -40,7 +40,7 @@ It starts with a POST to **/request** endpoint with a simple JSON Payload contai
 
 It then redirects us to **/request/Hulq94c45UO19c7RHWXpJFxpAhbPZzMw**. This obviously random ID is the identifier of my request.
 
-At first it receives an **"Processing..."** JSON response:
+At first it receives a **"Processing..."** JSON response:
 
 ```json
 {"failed":true,"result":"Processing..."}
@@ -112,11 +112,11 @@ app.post('/request',(req,res)=>{
 
 #### **Summary**:
 * Gets the url from the JSON body
-* Generates then random token for our request
+* Generates the random token for our request
 * Declares a Request and an Output File Name
-* Writes the **Processing...** status
+* Writes the **Processing...** status in the file
 
-This is important: it saves our request in a file, with the token name in the format:
+This is important: it saves our request in a file, named with the token, in the following format:
 
 ```
 <TOKEN>|<SESSION_ID>|<STATUS>
@@ -246,7 +246,7 @@ Let's first play with the original (innocent) command called by the app.
 Ok, so let's take a look at jp2a parameters.
 
 I'll just keep the key parts here, for simplicity.
-(I investigated some other parameters, without success)
+(I investigated some other parameters, without success for this scenario)
 
 ```text
 $ jp2a --help
@@ -274,7 +274,7 @@ Project homepage on https://github.com/Talinx/jp2a
 Report bugs to <chris-r@posteo.net>
 ```
 
-We send a URL, but we could just send a local file!
+We send an URL, but we could just send a local file!
 At first, I tought the solution would be somehow generating ASCII art from the /flag endpoint, using SSRF but.. the /flag returns only text. I didn't find a way to do it (maybe there is).
 I also don't know about any local file that could help. But let's move on.
 
